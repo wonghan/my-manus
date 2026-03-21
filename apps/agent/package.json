@@ -1,0 +1,26 @@
+{
+  "name": "@my-manus/agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "node --env-file=../../.env --import tsx --watch src/server.ts",
+    "check": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@langchain/openai": "^1.0.1",
+    "@langchain/tavily": "^1.0.1",
+    "@my-manus/shared": "workspace:*",
+    "deepagents": "^1.8.4",
+    "express": "^5.1.0",
+    "langchain": "^1.0.6",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.5",
+    "@types/node": "^24.10.1"
+  }
+}

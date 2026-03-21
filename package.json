@@ -1,0 +1,18 @@
+{
+  "name": "my-manus",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.24.0",
+  "scripts": {
+    "dev": "concurrently -n web,api,agent -c cyan,green,magenta \"pnpm --filter @my-manus/web dev\" \"pnpm --filter @my-manus/api dev\" \"pnpm --filter @my-manus/agent dev\"",
+    "build": "pnpm --filter @my-manus/web build && pnpm --filter @my-manus/api check && pnpm --filter @my-manus/agent check && pnpm --filter @my-manus/shared check && pnpm --filter @my-manus/db check",
+    "check": "pnpm -r check",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

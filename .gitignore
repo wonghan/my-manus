@@ -1,0 +1,16 @@
+node_modules
+figma
+apps/web/node_modules
+apps/api/node_modules
+apps/agent/node_modules
+.next
+dist
+coverage
+.turbo
+.env
+.env.local
+.env.development
+.env.production
+.DS_Store
+figma/node_modules
+.playwright-cli

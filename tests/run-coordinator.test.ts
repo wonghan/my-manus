@@ -1,0 +1,62 @@
+import { beforeEach, describe, expect, it } from "vitest";
+import type { ApprovalRequest, ConversationMessage } from "../packages/shared/src/index";
+import { RunCoordinator } from "../apps/api/src/services/run-coordinator";
+import { InMemoryAppStore } from "../apps/api/src/store/in-memory-store";
+
+describe("run coordinator", () => {
+  beforeEach(() => {
+    process.env.AGENT_EXECUTION_MODE = "mock";
+  });
+
+  it("runs the clarification -> research -> artifact -> approval flow", async () => {
+    const store = new InMemoryAppStore();
+    const coordinator = new RunCoordinator(store);
+    const session = store.createSession("New session");
+    const created = store.createRun(session.id, "AI plan");
+
+    await coordinator.startRun(created.run);
+
+    expect(store.getRun(created.run.id)?.status).toBe("waiting_clarification");
+    expect(store.getPendingClarification(created.run.id)).toBeTruthy();
+    expect(
+      store.getRunEvents(created.run.id).some(
+        (event) =>
+          event.type === "CUSTOM" &&
+          event.name === "a2ui.message" &&
+          typeof event.value === "object" &&
+          event.value !== null &&
+          "surfaceId" in event.value &&
+          event.value.surfaceId === `clarification:${created.run.id}`
+      )
+    ).toBe(true);
+
+    await coordinator.continueRunAfterClarification(
+      created.run.id,
+      "Focus on a private deployment for a small product team."
+    );
+
+    expect(store.getRun(created.run.id)?.status).toBe("completed");
+    expect(
+      store.getRunEvents(created.run.id).some(
+        (event) => event.type === "RUN_FINISHED"
+      )
+    ).toBe(true);
+    expect(store.listArtifacts(created.run.id)).toHaveLength(4);
+
+    const approval = (await coordinator.requestExportApproval(
+      created.run.id
+    )) as ApprovalRequest;
+    expect(store.getRun(created.run.id)?.status).toBe("waiting_approval");
+
+    await coordinator.resolveApproval(approval.id, "approved");
+
+    expect(store.getRun(created.run.id)?.status).toBe("completed");
+
+    const detail = store.getSessionDetail(session.id);
+    const assistantMessage = detail?.messages.find(
+      (message): message is ConversationMessage => message.role === "assistant"
+    );
+
+    expect(assistantMessage?.content).toContain("Export approved");
+  });
+});
