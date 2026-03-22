@@ -19,6 +19,7 @@
 - 支持会话列表、聊天区、右侧工作区的基础产品形态
 - 支持 `mock` 和 `live` 两种 Agent 模式
 - 支持步骤时间线、assistant 正文、artifact 展示
+- 支持动态步骤树，以及点击步骤回看对应 artifact
 - 支持 clarification 和 approval 这两类基础 HITL 交互
 - 支持通过 `AG-UI + A2UI` 协议流式驱动前端界面
 

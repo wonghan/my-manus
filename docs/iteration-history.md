@@ -84,7 +84,7 @@
 - `session-empty-state`
 - `message:{messageId}`
 - `steps:{runId}`
-- `artifact:{runId}:main`
+- `artifact:{artifactId}`
 - `artifact:{runId}:actions`
 - `clarification:{runId}`
 - `approval:{runId}`
@@ -211,15 +211,95 @@
   - 当前 API 是否真的是 `live`
   - `OPENAI_API_BASE` 是否沿 `/runs` 主链路传到了 research 层
 
+## 迭代 10：动态步骤树与可回溯 artifact workspace
+
+### 目标
+
+解决“右侧 workspace 只剩最后一个结果、browser 会被 table 覆盖”的问题，让 artifact 真正变成可回溯的产物。
+
+### 关键决策
+
+- 不再把所有结果反复写进同一个 `artifact:{runId}:main`。
+- 引入 `AgentPlan + PlannedStep`，把步骤树和 artifact 绑定关系显式建模。
+- `RunStep` 新增：
+  - `parentStepId`
+  - `sequence`
+  - `artifactId`
+  - `artifactKind`
+- `ArtifactRecord` 新增：
+  - `stepId`
+  - `sequence`
+- `RunCoordinator` 改成：
+  1. 先 `planResearchRun()`
+  2. 再 materialize 成两层步骤树
+  3. 逐个执行叶子步骤
+  4. 每个叶子步骤最多产出一个 artifact
+- 右侧 workspace 不再固定看某个 run 的单一 main surface，而是按 `artifactId` 显示独立 artifact surface。
+
+### 结果
+
+- browser、table、markdown、code 不会再互相覆盖。
+- 中间步骤区点到哪个叶子步骤，右侧就能回看对应 artifact。
+- 默认显示最新 artifact，但用户手动点回旧产物后，会进入 pinned 状态，不会再被新产物抢走。
+- 刷新后可以通过 `run_events` replay 恢复步骤树和 artifact surface。
+
+## 迭代 11：引入 Deep Agents planning 作为前置规划层
+
+### 目标
+
+不再把流程写死成固定三步，而是让 Agent 先规划，再按计划执行。
+
+### 关键决策
+
+- 在 `apps/agent` 增加两段能力：
+  - `planResearchRun(prompt, options)`
+  - `executePlannedStep(step, context, options)`
+- `deepagents` 的角色被明确为：
+  - 负责底层 planning 能力
+  - 负责 live research 结构化结果生成
+  - 不直接决定前端协议和 UI 生命周期
+- raw todos 不直接暴露给前端，前端只消费我们自己定义的 `AgentPlan`。
+- `mock` 和 `live` 都统一到“先规划、再逐步产物化”的合同。
+
+### 结果
+
+- 当前步骤树已经不是固定 `Shape the research plan / Search and review sources / Assemble artifact outputs`。
+- 最终主结果也不再固定偏向 `table`。
+- 哪些 artifact 会出现、出现顺序如何，已经可以由 agent planning 决定。
+
+## 迭代 12：workspace 交互细节修正
+
+### 目标
+
+把已经跑通的工作区交互，修到真正可用。
+
+### 关键问题
+
+1. 点击左侧步骤时，父步骤会意外折叠。
+2. 右侧 workspace 主体没有内边距。
+3. 右侧 workspace 主体不能滚动，底部内容看不到。
+
+### 修复结果
+
+- `TimelineItem` 结构拆成“标题行”和“详情体”两层，点击事件显式 `stopPropagation()`，避免选中子步骤时把父节点折叠掉。
+- workspace 主查看区增加了内边距。
+- workspace 主查看区改成可纵向滚动。
+
+### 当前体验
+
+- 点击步骤切换 artifact 时，当前流程树不会被意外收起。
+- 右侧 artifact 阅读体验明显更接近真实产品，而不是只够开发联调的工程态。
+
 ## 当前状态总结
 
 到目前为止，这个仓库已经完成了这些关键目标：
 
 - 架构层：monorepo 已稳定
 - 协议层：AG-UI + A2UI 已落地
-- 页面层：Figma 方向的壳层已成型
+- 页面层：Figma 方向的壳层已成型，workspace 可按步骤回看产物
 - 运行层：mock / live 已打通
 - 交互层：clarification / approval / artifact actions 已可用
+- 规划层：deepagents planning 已接入主链路
 
 但它还不是生产版，当前最明显的缺口仍然是：
 

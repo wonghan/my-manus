@@ -25,7 +25,8 @@ import {
 import {
   getValueAtPath,
   type A2UiBinding,
-  type A2UiUserAction
+  type A2UiUserAction,
+  type RunStep
 } from "@my-manus/shared";
 import type { SurfaceState } from "../lib/protocol-state";
 
@@ -33,22 +34,32 @@ interface SurfaceHostProps {
   surface?: SurfaceState;
   sessionId?: string;
   runId?: string;
+  selectedArtifactId?: string;
+  onSelectArtifact?: (artifactId: string) => void;
   onAction: (payload: A2UiUserAction) => Promise<void>;
 }
 
-interface TimelineRecord {
-  id?: string;
-  title?: string;
-  status?: string;
-  logs?: string[];
-  details?: string;
-  subSteps?: TimelineRecord[];
+interface TimelineRecord
+  extends Pick<
+    RunStep,
+    | "id"
+    | "title"
+    | "status"
+    | "logs"
+    | "detail"
+    | "artifactId"
+    | "artifactKind"
+    | "sequence"
+  > {
+  children?: TimelineRecord[];
 }
 
 export function ProtocolSurface({
   surface,
   sessionId,
   runId,
+  selectedArtifactId,
+  onSelectArtifact,
   onAction
 }: SurfaceHostProps) {
   const [fields, setFields] = useState<Record<string, string>>({});
@@ -344,26 +355,40 @@ export function ProtocolSurface({
           </div>
         );
       case "StepTimeline":
-        return (
-          <div
-            className="my-4 w-full max-w-2xl rounded-xl border border-gray-200 bg-white p-4 shadow-sm"
-            key={component.id}
-          >
-            <div className="mb-4 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-              <Terminal size={14} />
-              Agent Reasoning
+        {
+          const timelineSteps = createTimelineTree(
+            (Array.isArray(props.steps) ? props.steps : []) as RunStep[]
+          );
+          const currentArtifactId =
+            typeof selectedArtifactId === "string" && selectedArtifactId
+              ? selectedArtifactId
+              : typeof props.latestArtifactId === "string"
+                ? String(props.latestArtifactId)
+                : undefined;
+
+          return (
+            <div
+              className="my-4 w-full max-w-2xl rounded-xl border border-gray-200 bg-white p-4 shadow-sm"
+              key={component.id}
+            >
+              <div className="mb-4 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                <Terminal size={14} />
+                Agent Reasoning
+              </div>
+              <div className="ml-1 flex flex-col">
+                {timelineSteps.map((step, index, array) => (
+                  <TimelineItem
+                    key={String(step.id ?? index)}
+                    step={step}
+                    isLast={index === array.length - 1}
+                    selectedArtifactId={currentArtifactId}
+                    onSelectArtifact={onSelectArtifact}
+                  />
+                ))}
+              </div>
             </div>
-            <div className="ml-1 flex flex-col">
-              {(Array.isArray(props.steps) ? props.steps : []).map((step, index, array) => (
-                <TimelineItem
-                  key={String((step as TimelineRecord).id ?? index)}
-                  step={step as TimelineRecord}
-                  isLast={index === array.length - 1}
-                />
-              ))}
-            </div>
-          </div>
-        );
+          );
+        }
       case "ArtifactHeader":
         return (
           <div className="flex items-center justify-between gap-4" key={component.id}>
@@ -492,25 +517,42 @@ export function ProtocolSurface({
 
 function TimelineItem({
   step,
-  isLast
+  isLast,
+  selectedArtifactId,
+  onSelectArtifact
 }: {
   step: TimelineRecord;
   isLast: boolean;
+  selectedArtifactId?: string;
+  onSelectArtifact?: (artifactId: string) => void;
 }) {
   const [isExpanded, setIsExpanded] = useState(
-    step.status === "running" || step.status === "error"
+    step.status === "running" ||
+      step.status === "error" ||
+      (step.children?.length ?? 0) > 0
   );
 
   useEffect(() => {
-    if (step.status === "running") {
+    if (
+      step.status === "running" ||
+      (selectedArtifactId && step.artifactId === selectedArtifactId)
+    ) {
       setIsExpanded(true);
     }
-  }, [step.status]);
+  }, [selectedArtifactId, step.artifactId, step.status]);
 
+  const hasChildren = Boolean(step.children?.length);
   const hasDetails =
-    Boolean(step.details) ||
+    Boolean(step.detail) ||
     Boolean(step.logs?.length) ||
-    Boolean(step.subSteps?.length);
+    hasChildren;
+  const canSelectArtifact = Boolean(step.artifactId && onSelectArtifact);
+  const isSelected = Boolean(
+    step.artifactId &&
+      selectedArtifactId &&
+      step.artifactId === selectedArtifactId
+  );
+  const isClickable = hasChildren || canSelectArtifact;
 
   return (
     <div className="group relative flex flex-col">
@@ -519,10 +561,21 @@ function TimelineItem({
       ) : null}
 
       <div
-        className="z-10 -ml-2 flex cursor-pointer items-start gap-3 rounded-md px-2 py-1.5 transition-colors hover:bg-gray-50/50"
-        onClick={() => {
-          if (hasDetails) {
+        className={clsx(
+          "z-10 -ml-2 flex items-start gap-3 rounded-md px-2 py-1.5 transition-colors",
+          isClickable ? "cursor-pointer hover:bg-gray-50/50" : "",
+          isSelected ? "bg-blue-50 ring-1 ring-blue-200" : ""
+        )}
+        onClick={(event) => {
+          event.stopPropagation();
+
+          if (hasChildren) {
             setIsExpanded((current) => !current);
+            return;
+          }
+
+          if (step.artifactId && onSelectArtifact) {
+            onSelectArtifact(step.artifactId);
           }
         }}
       >
@@ -543,50 +596,57 @@ function TimelineItem({
             >
               {step.title}
             </span>
-            {hasDetails ? (
+            {canSelectArtifact ? (
+              <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-blue-600">
+                {step.artifactKind ?? "artifact"}
+              </span>
+            ) : null}
+            {hasChildren ? (
               <span className="text-gray-400 opacity-0 transition-opacity group-hover:opacity-100">
                 {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
               </span>
             ) : null}
           </div>
+        </div>
+      </div>
 
-          {isExpanded && hasDetails ? (
-            <div className="overflow-hidden">
-              {step.details ? (
-                <div className="mt-1 border-l-2 border-gray-100 py-1 pl-1 text-xs text-gray-500">
-                  {step.details}
+      {isExpanded && hasDetails ? (
+        <div className="overflow-hidden pl-9">
+          {step.detail ? (
+            <div className="mt-1 border-l-2 border-gray-100 py-1 pl-1 text-xs text-gray-500">
+              {step.detail}
+            </div>
+          ) : null}
+          {step.logs && step.logs.length > 0 ? (
+            <div className="mt-2 overflow-x-auto rounded-md border border-gray-800 bg-gray-900 p-2 font-mono text-[10px] text-gray-300 shadow-inner">
+              {step.logs.map((log, index) => (
+                <div
+                  key={`${step.id ?? "step"}-${index}`}
+                  className="whitespace-pre-wrap font-mono leading-tight"
+                >
+                  {log}
                 </div>
-              ) : null}
-              {step.logs && step.logs.length > 0 ? (
-                <div className="mt-2 overflow-x-auto rounded-md border border-gray-800 bg-gray-900 p-2 font-mono text-[10px] text-gray-300 shadow-inner">
-                  {step.logs.map((log, index) => (
-                    <div
-                      key={`${step.id ?? "step"}-${index}`}
-                      className="whitespace-pre-wrap font-mono leading-tight"
-                    >
-                      {log}
-                    </div>
-                  ))}
-                  {step.status === "running" ? (
-                    <div className="mt-1 h-3 w-2 animate-pulse bg-gray-500" />
-                  ) : null}
-                </div>
-              ) : null}
-              {step.subSteps && step.subSteps.length > 0 ? (
-                <div className="mt-2 pl-4">
-                  {step.subSteps.map((subStep, index) => (
-                    <TimelineItem
-                      key={subStep.id ?? index}
-                      step={subStep}
-                      isLast={index === step.subSteps!.length - 1}
-                    />
-                  ))}
-                </div>
+              ))}
+              {step.status === "running" ? (
+                <div className="mt-1 h-3 w-2 animate-pulse bg-gray-500" />
               ) : null}
             </div>
           ) : null}
+          {step.children && step.children.length > 0 ? (
+            <div className="mt-2 pl-4">
+              {step.children.map((subStep, index) => (
+                <TimelineItem
+                  key={subStep.id ?? index}
+                  step={subStep}
+                  isLast={index === step.children!.length - 1}
+                  selectedArtifactId={selectedArtifactId}
+                  onSelectArtifact={onSelectArtifact}
+                />
+              ))}
+            </div>
+          ) : null}
         </div>
-      </div>
+      ) : null}
     </div>
   );
 }
@@ -602,6 +662,26 @@ function getTimelineIcon(step: TimelineRecord) {
 
   const title = (step.title ?? "").toLowerCase();
   const iconClass = "shrink-0 text-gray-400";
+
+  if (step.artifactKind === "browser") {
+    return <Globe size={16} className={iconClass} />;
+  }
+
+  if (step.artifactKind === "table") {
+    return <Database size={16} className={iconClass} />;
+  }
+
+  if (step.artifactKind === "code") {
+    return <Code2 size={16} className={iconClass} />;
+  }
+
+  if (step.artifactKind === "markdown") {
+    return <FileText size={16} className={iconClass} />;
+  }
+
+  if (step.artifactKind === "terminal") {
+    return <Terminal size={16} className={iconClass} />;
+  }
 
   if (title.includes("search")) {
     return <Search size={16} className={iconClass} />;
@@ -632,6 +712,44 @@ function getTimelineIcon(step: TimelineRecord) {
   }
 
   return <Circle size={16} className={iconClass} />;
+}
+
+function createTimelineTree(steps: RunStep[]): TimelineRecord[] {
+  const sorted = [...steps].sort((left, right) => left.sequence - right.sequence);
+  const childrenByParent = new Map<string, TimelineRecord[]>();
+
+  for (const step of sorted) {
+    if (!step.parentStepId) {
+      continue;
+    }
+
+    const current = childrenByParent.get(step.parentStepId) ?? [];
+    current.push({
+      id: step.id,
+      title: step.title,
+      status: step.status,
+      detail: step.detail,
+      logs: step.logs,
+      artifactId: step.artifactId,
+      artifactKind: step.artifactKind,
+      sequence: step.sequence
+    });
+    childrenByParent.set(step.parentStepId, current);
+  }
+
+  return sorted
+    .filter((step) => !step.parentStepId)
+    .map((step) => ({
+      id: step.id,
+      title: step.title,
+      status: step.status,
+      detail: step.detail,
+      logs: step.logs,
+      artifactId: step.artifactId,
+      artifactKind: step.artifactKind,
+      sequence: step.sequence,
+      children: childrenByParent.get(step.id) ?? []
+    }));
 }
 
 function gapClass(value: unknown) {

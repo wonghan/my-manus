@@ -147,7 +147,11 @@ export function buildAssistantMessageSurface(surfaceId: string): A2UiMessage[] {
   ];
 }
 
-export function buildStepsSurface(surfaceId: string, steps: RunStep[] = []): A2UiMessage[] {
+export function buildStepsSurface(
+  surfaceId: string,
+  steps: RunStep[] = [],
+  latestArtifactId?: string
+): A2UiMessage[] {
   return [
     begin(surfaceId, "Agent steps"),
     update(surfaceId, "steps-root", [
@@ -155,12 +159,14 @@ export function buildStepsSurface(surfaceId: string, steps: RunStep[] = []): A2U
         id: "steps-root",
         type: "StepTimeline",
         props: {
-          steps: bind("/steps")
+          steps: bind("/steps"),
+          latestArtifactId: bind("/latestArtifactId")
         }
       }
     ]),
     data(surfaceId, {
-      steps
+      steps,
+      latestArtifactId
     })
   ];
 }

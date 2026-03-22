@@ -1,4 +1,53 @@
-import type { ResearchReference, ResearchResult } from "@my-manus/shared";
+import type {
+  AgentPlan,
+  ArtifactKind,
+  PlannedStep,
+  ResearchReference,
+  ResearchResult
+} from "@my-manus/shared";
+
+const artifactKindTitles: Record<ArtifactKind, string> = {
+  browser: "Review sources in browser workspace",
+  table: "Build comparison table",
+  markdown: "Write markdown report",
+  code: "Prepare code sample",
+  terminal: "Capture terminal output"
+};
+
+export function createMockResearchPlan(prompt: string): AgentPlan {
+  const artifactKinds = inferArtifactKinds(prompt);
+
+  return {
+    steps: [
+      {
+        id: "research-phase",
+        title: "Research the topic",
+        description: "Gather the core context and references for the request.",
+        children: [
+          {
+            id: "research-phase-browser",
+            title: artifactKindTitles.browser,
+            description: "Capture the source landscape in a browser-style artifact.",
+            artifactKind: "browser"
+          }
+        ]
+      },
+      {
+        id: "delivery-phase",
+        title: "Assemble deliverables",
+        description: "Turn the findings into concrete output artifacts.",
+        children: artifactKinds
+          .filter((kind) => kind !== "browser")
+          .map((kind) => ({
+            id: `delivery-phase-${kind}`,
+            title: artifactKindTitles[kind],
+            description: `Produce the ${kind} artifact for the workspace.`,
+            artifactKind: kind
+          }))
+      }
+    ]
+  };
+}
 
 export function createMockResearchResult(prompt: string): ResearchResult {
   const topic = extractTopic(prompt);
@@ -87,6 +136,31 @@ export function createMockResearchResult(prompt: string): ResearchResult {
     },
     references
   };
+}
+
+function inferArtifactKinds(prompt: string): ArtifactKind[] {
+  const lowered = prompt.toLowerCase();
+  const kinds: ArtifactKind[] = ["browser"];
+
+  if (
+    /compare|comparison|matrix|table|vs\b|versus|对比|表格|矩阵/.test(lowered)
+  ) {
+    kinds.push("table");
+  }
+
+  if (/code|component|snippet|sdk|api|示例|代码|组件/.test(lowered)) {
+    kinds.push("code");
+  }
+
+  if (/terminal|shell|cli|bash|命令行/.test(lowered)) {
+    kinds.push("terminal");
+  }
+
+  if (!kinds.includes("markdown")) {
+    kinds.push("markdown");
+  }
+
+  return kinds;
 }
 
 function extractTopic(prompt: string) {

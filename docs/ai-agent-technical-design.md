@@ -34,6 +34,8 @@
 - `AG-UI` 已作为唯一的 SSE 事件总线。
 - `A2UI v0.8` 已作为所有 Agent-owned UI 的统一描述协议。
 - 支持 `mock` 和 `live` 两种 research 模式。
+- 支持 deepagents planning 驱动的动态步骤树。
+- 支持按步骤回看独立 artifact，而不是只看最后一个结果。
 - 支持 clarification、approval、artifact actions 这些基础 HITL 交互。
 
 ### 2.2 当前还没有完成的能力
@@ -210,11 +212,17 @@
 | `session-empty-state` | 欢迎空态 |
 | `message:{messageId}` | assistant 正文 |
 | `steps:{runId}` | 步骤时间线 |
-| `artifact:{runId}:main` | artifact 主体 |
+| `artifact:{artifactId}` | 单个 artifact 主体 |
 | `artifact:{runId}:actions` | artifact 操作区 |
 | `clarification:{runId}` | clarification 表单 |
 | `approval:{runId}` | 审批面板 |
 | `error:{runId}` | 错误 surface |
+
+需要特别注意的是：
+
+- `steps:{runId}` 的 data model 现在除了 `steps` 之外，还会携带 `latestArtifactId`。
+- 右侧 workspace 默认显示最新 artifact。
+- 用户点击某个叶子步骤后，前端会把当前 run 切到 pinned 状态，右侧继续显示该步骤对应的 artifact，直到用户主动再切换。
 
 当前 A2UI renderer 支持的 catalog 组件包括：
 
@@ -360,18 +368,24 @@
 6. 发出 assistant 文本事件
 7. 如果命中 clarification 条件，切到 `waiting_clarification`
 8. 否则进入 `performResearch`
-9. research 完成后，产出 artifact surface 和 message content
-10. 根据结果决定是继续 approval、完成 run，还是进入 error surface
+9. `performResearch()` 先调用 `planResearchRun()` 拿到动态步骤树
+10. API 把步骤树 materialize 成 `RunStep[]`，同步到 `steps:{runId}` surface
+11. 协调器逐个执行叶子步骤，每完成一步就创建独立 `ArtifactRecord`
+12. 每个 artifact 通过 `artifact:{artifactId}` surface 渲染到右侧 workspace
+13. assistant 正文补充总结，run 进入完成态，或根据结果进入 approval / error
 
 ### 9.1 当前步骤设计
 
-`performResearch()` 当前默认拆成 3 个步骤：
+当前步骤已经不再是固定三步，而是：
 
-1. `Shape the research plan`
-2. `Search and review sources`
-3. `Assemble artifact outputs`
+1. 先由 `planResearchRun()` 生成两层步骤树。
+2. 顶层步骤负责表达阶段分组。
+3. 叶子步骤负责真正执行，并且一个叶子步骤最多绑定一个 artifact。
 
-这么设计是为了让用户看到“Agent 不是突然给答案”，而是有可见的中间过程。
+这么设计的原因有两个：
+
+- 用户可以从时间线回看“某个步骤到底产出了什么”。
+- browser、table、markdown、code 等 artifact 不会再互相覆盖。
 
 ### 9.2 Clarification
 
@@ -422,9 +436,17 @@ TAVILY_API_KEY=
 
 当前 live research 的思路是：
 
-1. 用 OpenAI 模型生成结构化研究结果。
-2. 用 Tavily 做搜索补充。
-3. 最终整理成统一的 `ResearchResult`。
+1. 先用 `createDeepAgent()` + 结构化 schema 生成 `AgentPlan`。
+2. 再按叶子步骤执行，每次只产出一个 artifact。
+3. 需要研究内容时，调用真正的 research 生成统一 `ResearchResult`。
+4. 根据不同 `artifactKind`，从 `ResearchResult` 中切出 browser / table / markdown / code 等产物。
+
+也就是说，deepagents 在当前版本里主要承担两类角色：
+
+- planning
+- live research 的结构化生成
+
+前端协议、workspace 展示策略、artifact 回溯关系，仍然由我们自己的共享合同和 `RunCoordinator` 负责。
 
 ### 10.3 当前调试里已经踩过的坑
 
@@ -516,6 +538,8 @@ AGENT_EXECUTION_MODE=mock
 - 提问后 assistant surface 是否流式更新
 - steps surface 是否变化
 - workspace 是否出现 artifact
+- 点击步骤后是否能切换到对应 artifact
+- 用户手动切回旧产物后，workspace 是否保持 pinned
 - approval 是否可点击
 - clarification 是否能继续推进 run
 

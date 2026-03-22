@@ -31,6 +31,12 @@ export function AppShell() {
   const [prompt, setPrompt] = useState("");
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [selectedArtifactIdByRun, setSelectedArtifactIdByRun] = useState<
+    Record<string, string>
+  >({});
+  const [isArtifactPinnedByRun, setIsArtifactPinnedByRun] = useState<
+    Record<string, boolean>
+  >({});
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const loadSession = useCallback(async (sessionId: string) => {
@@ -131,6 +137,10 @@ export function AppShell() {
 
     setPrompt("");
     setIsFullscreen(false);
+    setIsArtifactPinnedByRun((current) => ({
+      ...current,
+      [response.run.id]: false
+    }));
     openRunStream(response.run.id, true);
 
     const sessions = await apiClient.listSessions();
@@ -143,18 +153,24 @@ export function AppShell() {
   async function handleSurfaceAction(payload: A2UiUserAction) {
     const response = await apiClient.postUserAction(payload);
     if (response.session && response.run && response.messages) {
+      const run = response.run;
+
       dispatch({
         type: "run/created",
         session: {
           ...response.session,
           lastPreview: response.messages[0]?.content ?? "New run"
         },
-        run: response.run,
+        run,
         messages: response.messages
       });
 
       setIsFullscreen(false);
-      openRunStream(response.run.id, true);
+      setIsArtifactPinnedByRun((current) => ({
+        ...current,
+        [run.id]: false
+      }));
+      openRunStream(run.id, true);
       const sessions = await apiClient.listSessions();
       dispatch({
         type: "sessions/loaded",
@@ -189,11 +205,48 @@ export function AppShell() {
     : undefined;
   const activeRunId = state.activeRunId;
   const activeRunStatus = activeRunId ? state.runStatus[activeRunId] : undefined;
-  const workspaceSurface = activeRunId
-    ? state.surfaces[`artifact:${activeRunId}:main`]
+  const activeStepsSurface = activeRunId
+    ? state.surfaces[`steps:${activeRunId}`]
+    : undefined;
+  const latestArtifactId =
+    activeStepsSurface &&
+    typeof activeStepsSurface.dataModel.latestArtifactId === "string"
+      ? String(activeStepsSurface.dataModel.latestArtifactId)
+      : undefined;
+  const pinnedArtifactId = activeRunId
+    ? selectedArtifactIdByRun[activeRunId]
+    : undefined;
+  const visibleArtifactId =
+    activeRunId && isArtifactPinnedByRun[activeRunId]
+      ? pinnedArtifactId
+      : latestArtifactId ?? pinnedArtifactId;
+  const workspaceSurface = visibleArtifactId
+    ? state.surfaces[`artifact:${visibleArtifactId}`]
+    : undefined;
+  const workspaceActionsSurface = activeRunId
+    ? state.surfaces[`artifact:${activeRunId}:actions`]
     : undefined;
   const hasWorkspace = Boolean(workspaceSurface);
   const isThinking = activeRunStatus === "running";
+
+  const handleSelectArtifact = useCallback(
+    (runId: string, artifactId: string) => {
+      dispatch({
+        type: "session/selected",
+        sessionId: state.activeSessionId,
+        activeRunId: runId
+      });
+      setSelectedArtifactIdByRun((current) => ({
+        ...current,
+        [runId]: artifactId
+      }));
+      setIsArtifactPinnedByRun((current) => ({
+        ...current,
+        [runId]: true
+      }));
+    },
+    [state.activeSessionId]
+  );
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-white font-sans text-gray-900 selection:bg-blue-200 selection:text-blue-900">
@@ -217,16 +270,18 @@ export function AppShell() {
       <div className="relative flex h-full flex-1 flex-col overflow-hidden bg-gray-50/50">
         {!hasWorkspace ? (
           <div className="h-full w-full max-w-4xl flex-1 self-center shadow-2xl shadow-gray-200/20">
-            <ChatPanel
-              detail={activeDetail}
-              isThinking={isThinking}
-              prompt={prompt}
-              setPrompt={setPrompt}
-              errorMessage={state.errorMessage}
-              onSubmit={handleSubmit}
-              onSurfaceAction={handleSurfaceAction}
-              surfaces={state.surfaces}
-            />
+              <ChatPanel
+                detail={activeDetail}
+                isThinking={isThinking}
+                prompt={prompt}
+                setPrompt={setPrompt}
+                errorMessage={state.errorMessage}
+                onSubmit={handleSubmit}
+                onSurfaceAction={handleSurfaceAction}
+                surfaces={state.surfaces}
+                selectedArtifactIdByRun={selectedArtifactIdByRun}
+                onSelectArtifact={handleSelectArtifact}
+              />
           </div>
         ) : (
           <PanelGroup direction="horizontal" className="h-full w-full">
@@ -246,6 +301,8 @@ export function AppShell() {
                     onSubmit={handleSubmit}
                     onSurfaceAction={handleSurfaceAction}
                     surfaces={state.surfaces}
+                    selectedArtifactIdByRun={selectedArtifactIdByRun}
+                    onSelectArtifact={handleSelectArtifact}
                   />
                 </Panel>
                 <PanelResizeHandle className="group z-20 flex w-1.5 cursor-col-resize items-center justify-center border-x border-gray-200/50 bg-gray-100/50 transition-colors hover:bg-blue-400 active:bg-blue-500">
@@ -261,6 +318,7 @@ export function AppShell() {
             >
               <WorkspacePanel
                 surface={workspaceSurface}
+                actionsSurface={workspaceActionsSurface}
                 sessionId={state.activeSessionId}
                 runId={activeRunId}
                 onSurfaceAction={handleSurfaceAction}
@@ -405,6 +463,8 @@ interface ChatPanelProps {
   onSubmit: () => Promise<void>;
   onSurfaceAction: (payload: A2UiUserAction) => Promise<void>;
   surfaces: Record<string, SurfaceState>;
+  selectedArtifactIdByRun: Record<string, string>;
+  onSelectArtifact: (runId: string, artifactId: string) => void;
 }
 
 function ChatPanel({
@@ -415,7 +475,9 @@ function ChatPanel({
   errorMessage,
   onSubmit,
   onSurfaceAction,
-  surfaces
+  surfaces,
+  selectedArtifactIdByRun,
+  onSelectArtifact
 }: ChatPanelProps) {
   const sessionId = detail?.session.id ?? "bootstrap";
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -483,6 +545,16 @@ function ChatPanel({
                         }
                         sessionId={detail.session.id}
                         runId={message.runId}
+                        selectedArtifactId={
+                          message.runId
+                            ? selectedArtifactIdByRun[message.runId]
+                            : undefined
+                        }
+                        onSelectArtifact={(artifactId) => {
+                          if (message.runId) {
+                            onSelectArtifact(message.runId, artifactId);
+                          }
+                        }}
                         onAction={onSurfaceAction}
                       />
                       <ProtocolSurface
@@ -595,6 +667,7 @@ function ChatPanel({
 
 interface WorkspacePanelProps {
   surface?: SurfaceState;
+  actionsSurface?: SurfaceState;
   sessionId?: string;
   runId?: string;
   onSurfaceAction: (payload: A2UiUserAction) => Promise<void>;
@@ -604,6 +677,7 @@ interface WorkspacePanelProps {
 
 function WorkspacePanel({
   surface,
+  actionsSurface,
   sessionId,
   runId,
   onSurfaceAction,
@@ -624,14 +698,28 @@ function WorkspacePanel({
         </button>
       </div>
 
-      <div className="relative z-10 h-full overflow-hidden rounded-xl border border-gray-200/50 bg-white shadow-sm">
-        {surface ? (
-          <ProtocolSurface
-            surface={surface}
-            sessionId={sessionId}
-            runId={runId}
-            onAction={onSurfaceAction}
-          />
+      <div className="relative z-10 flex h-full flex-col gap-4">
+        <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-gray-200/50 bg-white shadow-sm">
+          {surface ? (
+            <div className="h-full overflow-y-auto p-5">
+              <ProtocolSurface
+                surface={surface}
+                sessionId={sessionId}
+                runId={runId}
+                onAction={onSurfaceAction}
+              />
+            </div>
+          ) : null}
+        </div>
+        {actionsSurface ? (
+          <div className="rounded-xl border border-gray-200/50 bg-white p-4 shadow-sm">
+            <ProtocolSurface
+              surface={actionsSurface}
+              sessionId={sessionId}
+              runId={runId}
+              onAction={onSurfaceAction}
+            />
+          </div>
         ) : null}
       </div>
     </div>

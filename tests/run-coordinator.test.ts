@@ -8,7 +8,7 @@ describe("run coordinator", () => {
     process.env.AGENT_EXECUTION_MODE = "mock";
   });
 
-  it("runs the clarification -> research -> artifact -> approval flow", async () => {
+  it("runs the clarification -> dynamic plan -> artifacts -> approval flow", async () => {
     const store = new InMemoryAppStore();
     const coordinator = new RunCoordinator(store);
     const session = store.createSession("New session");
@@ -41,7 +41,23 @@ describe("run coordinator", () => {
         (event) => event.type === "RUN_FINISHED"
       )
     ).toBe(true);
-    expect(store.listArtifacts(created.run.id)).toHaveLength(4);
+    const artifacts = store.listArtifacts(created.run.id);
+    expect(artifacts).toHaveLength(2);
+    expect(artifacts.map((artifact) => artifact.kind)).toEqual([
+      "browser",
+      "markdown"
+    ]);
+    expect(artifacts[0]?.stepId).toContain("research-phase-browser");
+    expect(artifacts[1]?.stepId).toContain("delivery-phase-markdown");
+
+    const runSteps = store.getRunSteps(created.run.id);
+    const parentSteps = runSteps.filter((step) => !step.parentStepId);
+    const leafSteps = runSteps.filter((step) => Boolean(step.parentStepId));
+
+    expect(parentSteps).toHaveLength(2);
+    expect(leafSteps).toHaveLength(2);
+    expect(leafSteps.every((step) => step.artifactId)).toBe(true);
+    expect(parentSteps.every((step) => step.status === "completed")).toBe(true);
 
     const approval = (await coordinator.requestExportApproval(
       created.run.id

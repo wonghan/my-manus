@@ -18,6 +18,18 @@ export type ArtifactKind =
   | "markdown"
   | "terminal";
 
+export interface PlannedStep {
+  id: string;
+  title: string;
+  description?: string;
+  artifactKind?: ArtifactKind;
+  children?: PlannedStep[];
+}
+
+export interface AgentPlan {
+  steps: PlannedStep[];
+}
+
 export type ApprovalType =
   | "open_external_link"
   | "export_file"
@@ -39,6 +51,10 @@ export interface RunStep {
   runId: string;
   title: string;
   status: StepStatus;
+  parentStepId?: string;
+  sequence: number;
+  artifactId?: string;
+  artifactKind?: ArtifactKind;
   detail?: string;
   logs: string[];
 }
@@ -46,6 +62,8 @@ export interface RunStep {
 export interface ArtifactRecord {
   id: string;
   runId: string;
+  stepId: string;
+  sequence: number;
   kind: ArtifactKind;
   title: string;
   payload: Record<string, unknown>;
