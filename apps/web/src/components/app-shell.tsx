@@ -404,7 +404,12 @@ export function AppShell() {
         }}
       />
 
-      <div className="relative flex h-full flex-1 flex-col overflow-hidden bg-gray-50/50">
+      <div
+        className={clsx(
+          "relative flex h-full flex-1 flex-col overflow-hidden",
+          hasWorkspace ? "bg-gray-50/50" : "bg-white"
+        )}
+      >
         {!hasWorkspace ? (
           <div className="h-full w-full max-w-4xl flex-1 self-center shadow-2xl shadow-gray-200/20">
               <ChatPanel

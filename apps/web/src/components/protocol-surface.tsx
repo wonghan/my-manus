@@ -114,7 +114,13 @@ export function ProtocolSurface({
         );
       case "Text":
         return (
-          <p className={textToneClass(String(props.tone ?? "body"))} key={component.id}>
+          <p
+            className={clsx(
+              textToneClass(String(props.tone ?? "body")),
+              textAlignClass(String(props.align ?? "left"))
+            )}
+            key={component.id}
+          >
             {String(props.text ?? "")}
           </p>
         );
@@ -244,7 +250,13 @@ export function ProtocolSurface({
         );
       case "List":
         return (
-          <div className="grid w-full max-w-2xl grid-cols-1 gap-3 sm:grid-cols-2" key={component.id}>
+          <div
+            className={clsx(
+              "grid w-full max-w-2xl grid-cols-1 gap-3 sm:grid-cols-2",
+              containerAlignClass(String(props.align ?? "left"))
+            )}
+            key={component.id}
+          >
             {(Array.isArray(props.items) ? props.items : []).map((item, index) => {
               const record = item as Record<string, unknown>;
               return (
@@ -776,6 +788,28 @@ function textToneClass(tone: string) {
     case "body":
     default:
       return "text-sm leading-relaxed text-gray-700";
+  }
+}
+
+function textAlignClass(align: string) {
+  switch (align) {
+    case "center":
+      return "mx-auto text-center";
+    case "right":
+      return "ml-auto text-right";
+    default:
+      return "";
+  }
+}
+
+function containerAlignClass(align: string) {
+  switch (align) {
+    case "center":
+      return "mx-auto";
+    case "right":
+      return "ml-auto";
+    default:
+      return "";
   }
 }
 

@@ -2,7 +2,17 @@
 
 一个基于 `artifact` 的 AI Agent 平台原型。
 
-![My Manus preview](./docs/images/preview.png)
+当前重点是把 Agent 的执行过程、步骤树、artifact 结果和人机协作过程做成可观察、可回溯、可恢复的产品体验，而不是只返回一段黑盒答案。
+
+## 界面预览
+
+### 首页空态
+
+![My Manus home preview](./docs/images/preview_home.png)
+
+### 对话与工作区
+
+![My Manus chat preview](./docs/images/preview_chat.png)
 
 当前版本采用：
 

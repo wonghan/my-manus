@@ -62,7 +62,8 @@ export function buildEmptyStateSurface(surfaceId = "session-empty-state"): A2UiM
         type: "Text",
         props: {
           text: literal("How can I help you today?"),
-          tone: "hero"
+          tone: "hero",
+          align: "center"
         }
       },
       {
@@ -72,7 +73,8 @@ export function buildEmptyStateSurface(surfaceId = "session-empty-state"): A2UiM
           text: literal(
             "I am an autonomous agent capable of browsing the web, writing code, and executing complex tasks."
           ),
-          tone: "muted"
+          tone: "muted",
+          align: "center"
         }
       },
       {
@@ -80,7 +82,8 @@ export function buildEmptyStateSurface(surfaceId = "session-empty-state"): A2UiM
         type: "List",
         props: {
           items: bind("/suggestions"),
-          actionName: "start-suggestion"
+          actionName: "start-suggestion",
+          align: "center"
         }
       }
     ]),
