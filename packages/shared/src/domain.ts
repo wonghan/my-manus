@@ -144,6 +144,10 @@ export interface PendingClarification {
   placeholder: string;
 }
 
+export interface PendingClarificationState extends PendingClarification {
+  prompt: string;
+}
+
 export interface UserPromptInput {
   sessionId: string;
   prompt: string;

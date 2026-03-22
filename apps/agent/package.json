@@ -7,12 +7,14 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "dev": "node --env-file=../../.env --import tsx --watch src/server.ts",
+    "dev": "node --env-file=../../.env --import tsx --watch src/worker.ts",
+    "dev:server": "node --env-file=../../.env --import tsx --watch src/server.ts",
     "check": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@langchain/openai": "^1.0.1",
     "@langchain/tavily": "^1.0.1",
+    "@my-manus/db": "workspace:*",
     "@my-manus/shared": "workspace:*",
     "deepagents": "^1.8.4",
     "express": "^5.1.0",

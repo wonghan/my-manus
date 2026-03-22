@@ -1,39 +1,36 @@
-import { EventEmitter } from "node:events";
-import {
-  type AgUiEvent,
-  type ApprovalRequest,
-  type ArtifactRecord,
-  type ConversationMessage,
-  type RunRecord,
-  type RunStatus,
-  type RunStep,
-  type SessionDetail,
-  type SessionRecord,
-  type SessionSummary
+import type {
+  AgUiEvent,
+  AppStore,
+  ApprovalRequest,
+  ArtifactRecord,
+  ConversationMessage,
+  PendingClarificationState,
+  RunRecord,
+  RunStatus,
+  RunStep,
+  SessionDetail,
+  SessionRecord,
+  SessionSummary
 } from "@my-manus/shared";
 
-interface PendingClarificationState {
-  prompt: string;
-  question: string;
-  placeholder: string;
-}
-
-export class InMemoryAppStore {
+export class InMemoryAppStore implements AppStore {
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly messages = new Map<string, ConversationMessage>();
   private readonly runs = new Map<string, RunRecord>();
   private readonly runSteps = new Map<string, RunStep[]>();
-  // artifact 数据会先落在内存里，未来切到 Postgres 时可以直接复用这层接口。
+  // artifact 数据会先落在内存里，切到 Postgres 时会复用同一套 store 接口。
   private readonly artifacts = new Map<string, ArtifactRecord[]>();
   private readonly approvals = new Map<string, ApprovalRequest>();
   // run_events 是当前版本唯一的“可重放历史”，刷新页面时依赖它恢复 A2UI surface。
   private readonly runEvents = new Map<string, AgUiEvent[]>();
   private readonly sessionMessageOrder = new Map<string, string[]>();
   private readonly sessionRunOrder = new Map<string, string[]>();
-  private readonly runEmitter = new EventEmitter();
-  private readonly pendingClarifications = new Map<string, PendingClarificationState>();
+  private readonly pendingClarifications = new Map<
+    string,
+    PendingClarificationState
+  >();
 
-  createSession(title: string): SessionRecord {
+  async createSession(title: string): Promise<SessionRecord> {
     const session: SessionRecord = {
       id: crypto.randomUUID(),
       title,
@@ -47,7 +44,7 @@ export class InMemoryAppStore {
     return session;
   }
 
-  listSessions(): SessionSummary[] {
+  async listSessions(): Promise<SessionSummary[]> {
     return [...this.sessions.values()]
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .map((session) => {
@@ -67,11 +64,13 @@ export class InMemoryAppStore {
       });
   }
 
-  getSession(sessionId: string) {
+  async getSession(sessionId: string): Promise<SessionRecord | undefined> {
     return this.sessions.get(sessionId);
   }
 
-  getSessionDetail(sessionId: string): SessionDetail | undefined {
+  async getSessionDetail(
+    sessionId: string
+  ): Promise<SessionDetail | undefined> {
     const session = this.sessions.get(sessionId);
     if (!session) {
       return undefined;
@@ -92,19 +91,21 @@ export class InMemoryAppStore {
     };
   }
 
-  createRun(sessionId: string, prompt: string) {
+  async createRun(sessionId: string, prompt: string) {
     const session = this.sessions.get(sessionId);
     if (!session) {
       throw new Error(`Unknown session ${sessionId}`);
     }
 
-    const now = new Date().toISOString();
+    const userMessageAt = new Date();
+    const assistantMessageAt = new Date(userMessageAt.getTime() + 1);
+    const runAt = new Date();
     const userMessage: ConversationMessage = {
       id: crypto.randomUUID(),
       sessionId,
       role: "user",
       content: prompt,
-      createdAt: now
+      createdAt: userMessageAt.toISOString()
     };
 
     const assistantMessage: ConversationMessage = {
@@ -112,7 +113,7 @@ export class InMemoryAppStore {
       sessionId,
       role: "assistant",
       content: "",
-      createdAt: now
+      createdAt: assistantMessageAt.toISOString()
     };
 
     const run: RunRecord = {
@@ -122,8 +123,8 @@ export class InMemoryAppStore {
       prompt,
       userMessageId: userMessage.id,
       assistantMessageId: assistantMessage.id,
-      createdAt: now,
-      updatedAt: now
+      createdAt: runAt.toISOString(),
+      updatedAt: runAt.toISOString()
     };
 
     assistantMessage.runId = run.id;
@@ -153,11 +154,11 @@ export class InMemoryAppStore {
     };
   }
 
-  getRun(runId: string) {
+  async getRun(runId: string): Promise<RunRecord | undefined> {
     return this.runs.get(runId);
   }
 
-  updateRunStatus(runId: string, status: RunStatus) {
+  async updateRunStatus(runId: string, status: RunStatus): Promise<void> {
     const run = this.runs.get(runId);
     if (!run) {
       return;
@@ -168,7 +169,7 @@ export class InMemoryAppStore {
     this.touchSession(run.sessionId);
   }
 
-  setRunPrompt(runId: string, prompt: string) {
+  async setRunPrompt(runId: string, prompt: string): Promise<void> {
     const run = this.runs.get(runId);
     if (!run) {
       return;
@@ -178,7 +179,7 @@ export class InMemoryAppStore {
     run.updatedAt = new Date().toISOString();
   }
 
-  appendAssistantContent(messageId: string, delta: string) {
+  async appendAssistantContent(messageId: string, delta: string): Promise<void> {
     const message = this.messages.get(messageId);
     if (!message) {
       return;
@@ -187,37 +188,38 @@ export class InMemoryAppStore {
     message.content += delta;
   }
 
-  setRunSteps(runId: string, steps: RunStep[]) {
+  async setRunSteps(runId: string, steps: RunStep[]): Promise<void> {
     this.runSteps.set(runId, steps);
   }
 
-  getRunSteps(runId: string) {
+  async getRunSteps(runId: string): Promise<RunStep[]> {
     return this.runSteps.get(runId) ?? [];
   }
 
-  addArtifact(artifact: ArtifactRecord) {
+  async addArtifact(artifact: ArtifactRecord): Promise<void> {
     const current = this.artifacts.get(artifact.runId) ?? [];
     current.push(artifact);
     this.artifacts.set(artifact.runId, current);
   }
 
-  listArtifacts(runId: string) {
+  async listArtifacts(runId: string): Promise<ArtifactRecord[]> {
     return this.artifacts.get(runId) ?? [];
   }
 
-  setArtifacts(runId: string, artifacts: ArtifactRecord[]) {
-    this.artifacts.set(runId, artifacts);
-  }
-
-  createApproval(approval: ApprovalRequest) {
+  async createApproval(approval: ApprovalRequest): Promise<void> {
     this.approvals.set(approval.id, approval);
   }
 
-  getApproval(approvalId: string) {
+  async getApproval(
+    approvalId: string
+  ): Promise<ApprovalRequest | undefined> {
     return this.approvals.get(approvalId);
   }
 
-  updateApprovalStatus(approvalId: string, status: ApprovalRequest["status"]) {
+  async updateApprovalStatus(
+    approvalId: string,
+    status: ApprovalRequest["status"]
+  ): Promise<void> {
     const approval = this.approvals.get(approvalId);
     if (!approval) {
       return;
@@ -226,35 +228,31 @@ export class InMemoryAppStore {
     approval.status = status;
   }
 
-  setPendingClarification(runId: string, state: PendingClarificationState) {
+  async setPendingClarification(
+    runId: string,
+    state: PendingClarificationState
+  ): Promise<void> {
     this.pendingClarifications.set(runId, state);
   }
 
-  getPendingClarification(runId: string) {
+  async getPendingClarification(
+    runId: string
+  ): Promise<PendingClarificationState | undefined> {
     return this.pendingClarifications.get(runId);
   }
 
-  clearPendingClarification(runId: string) {
+  async clearPendingClarification(runId: string): Promise<void> {
     this.pendingClarifications.delete(runId);
   }
 
-  pushRunEvent(runId: string, event: AgUiEvent) {
+  async pushRunEvent(runId: string, event: AgUiEvent): Promise<void> {
     const events = this.runEvents.get(runId) ?? [];
     events.push(event);
     this.runEvents.set(runId, events);
-    this.runEmitter.emit(runId, event);
   }
 
-  getRunEvents(runId: string) {
+  async getRunEvents(runId: string): Promise<AgUiEvent[]> {
     return this.runEvents.get(runId) ?? [];
-  }
-
-  subscribeToRun(runId: string, listener: (event: AgUiEvent) => void) {
-    this.runEmitter.on(runId, listener);
-
-    return () => {
-      this.runEmitter.off(runId, listener);
-    };
   }
 
   private touchSession(sessionId: string, titleHint?: string) {

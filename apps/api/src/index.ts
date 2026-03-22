@@ -5,5 +5,7 @@ const env = readApiEnvironment();
 const app = createApp();
 
 app.listen(env.port, () => {
-  console.log(`[api] listening on http://localhost:${env.port}`);
+  console.log(
+    `[api] listening on http://localhost:${env.port} (storage=${env.storageMode}, agent=${env.agentMode})`
+  );
 });

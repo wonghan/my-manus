@@ -26,20 +26,86 @@ import {
 } from "../lib/protocol-state";
 import { ProtocolSurface } from "./protocol-surface";
 
+const UI_STATE_STORAGE_KEY = "my-manus.ui-state.v1";
+
+interface PersistedUiState {
+  activeSessionId?: string;
+  activeRunIdBySession: Record<string, string>;
+  selectedArtifactIdByRun: Record<string, string>;
+  isArtifactPinnedByRun: Record<string, boolean>;
+}
+
+function readPersistedUiState(): PersistedUiState {
+  if (typeof window === "undefined") {
+    return {
+      activeRunIdBySession: {},
+      selectedArtifactIdByRun: {},
+      isArtifactPinnedByRun: {}
+    };
+  }
+
+  try {
+    const raw = window.localStorage.getItem(UI_STATE_STORAGE_KEY);
+
+    if (!raw) {
+      return {
+        activeRunIdBySession: {},
+        selectedArtifactIdByRun: {},
+        isArtifactPinnedByRun: {}
+      };
+    }
+
+    const parsed = JSON.parse(raw) as Partial<PersistedUiState>;
+
+    return {
+      activeSessionId:
+        typeof parsed.activeSessionId === "string"
+          ? parsed.activeSessionId
+          : undefined,
+      activeRunIdBySession:
+        parsed.activeRunIdBySession &&
+        typeof parsed.activeRunIdBySession === "object"
+          ? parsed.activeRunIdBySession
+          : {},
+      selectedArtifactIdByRun:
+        parsed.selectedArtifactIdByRun &&
+        typeof parsed.selectedArtifactIdByRun === "object"
+          ? parsed.selectedArtifactIdByRun
+          : {},
+      isArtifactPinnedByRun:
+        parsed.isArtifactPinnedByRun &&
+        typeof parsed.isArtifactPinnedByRun === "object"
+          ? parsed.isArtifactPinnedByRun
+          : {}
+    };
+  } catch {
+    return {
+      activeRunIdBySession: {},
+      selectedArtifactIdByRun: {},
+      isArtifactPinnedByRun: {}
+    };
+  }
+}
+
 export function AppShell() {
+  const initialUiStateRef = useRef<PersistedUiState>(readPersistedUiState());
   const [state, dispatch] = useReducer(protocolReducer, initialProtocolState);
   const [prompt, setPrompt] = useState("");
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isBootstrapping, setIsBootstrapping] = useState(true);
+  const [activeRunIdBySession, setActiveRunIdBySession] = useState<
+    Record<string, string>
+  >(() => initialUiStateRef.current.activeRunIdBySession);
   const [selectedArtifactIdByRun, setSelectedArtifactIdByRun] = useState<
     Record<string, string>
-  >({});
+  >(() => initialUiStateRef.current.selectedArtifactIdByRun);
   const [isArtifactPinnedByRun, setIsArtifactPinnedByRun] = useState<
     Record<string, boolean>
-  >({});
+  >(() => initialUiStateRef.current.isArtifactPinnedByRun);
   const eventSourceRef = useRef<EventSource | null>(null);
 
-  const loadSession = useCallback(async (sessionId: string) => {
+  const loadSession = useCallback(async (sessionId: string, preferredRunId?: string) => {
     const detailResponse = await apiClient.getSessionDetail(sessionId);
     dispatch({
       type: "session/detailLoaded",
@@ -56,7 +122,18 @@ export function AppShell() {
       }
     }
 
-    const latestRun = detailResponse.detail.runs.at(-1);
+    const preferredRun = preferredRunId
+      ? detailResponse.detail.runs.find((run) => run.id === preferredRunId)
+      : undefined;
+    const latestRun = preferredRun ?? detailResponse.detail.runs.at(-1);
+
+    if (latestRun) {
+      setActiveRunIdBySession((current) => ({
+        ...current,
+        [sessionId]: latestRun.id
+      }));
+    }
+
     dispatch({
       type: "session/selected",
       sessionId,
@@ -95,8 +172,19 @@ export function AppShell() {
           sessions: sessions.sessions
         });
 
-        if (sessions.sessions[0]) {
-          await loadSession(sessions.sessions[0].id);
+        const preferredSessionId =
+          initialUiStateRef.current.activeSessionId &&
+          sessions.sessions.some(
+            (session) => session.id === initialUiStateRef.current.activeSessionId
+          )
+            ? initialUiStateRef.current.activeSessionId
+            : sessions.sessions[0]?.id;
+
+        if (preferredSessionId) {
+          await loadSession(
+            preferredSessionId,
+            initialUiStateRef.current.activeRunIdBySession[preferredSessionId]
+          );
         }
       } catch (error) {
         dispatch({
@@ -106,6 +194,8 @@ export function AppShell() {
               ? error.message
               : "Failed to bootstrap the app."
         });
+      } finally {
+        setIsBootstrapping(false);
       }
     })();
 
@@ -113,6 +203,51 @@ export function AppShell() {
       eventSourceRef.current?.close();
     };
   }, [loadSession]);
+
+  useEffect(() => {
+    if (!state.activeSessionId || !state.activeRunId) {
+      return;
+    }
+
+    const sessionId = state.activeSessionId;
+    const runId = state.activeRunId;
+
+    setActiveRunIdBySession((current) => {
+      if (current[sessionId] === runId) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [sessionId]: runId
+      };
+    });
+  }, [state.activeRunId, state.activeSessionId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (isBootstrapping) {
+      return;
+    }
+
+    const snapshot: PersistedUiState = {
+      activeSessionId: state.activeSessionId,
+      activeRunIdBySession,
+      selectedArtifactIdByRun,
+      isArtifactPinnedByRun
+    };
+
+    window.localStorage.setItem(UI_STATE_STORAGE_KEY, JSON.stringify(snapshot));
+  }, [
+    activeRunIdBySession,
+    isBootstrapping,
+    isArtifactPinnedByRun,
+    selectedArtifactIdByRun,
+    state.activeSessionId
+  ]);
 
   const handleSubmit = useCallback(async () => {
     const trimmed = prompt.trim();
@@ -255,7 +390,9 @@ export function AppShell() {
         setIsOpen={setIsSidebarOpen}
         sessions={state.sessions}
         activeSessionId={state.activeSessionId}
-        onSelectSession={(sessionId) => void loadSession(sessionId)}
+        onSelectSession={(sessionId) =>
+          void loadSession(sessionId, activeRunIdBySession[sessionId])
+        }
         onNewSession={() => {
           eventSourceRef.current?.close();
           setIsFullscreen(false);
@@ -273,6 +410,7 @@ export function AppShell() {
               <ChatPanel
                 detail={activeDetail}
                 isThinking={isThinking}
+                isBootstrapping={isBootstrapping}
                 prompt={prompt}
                 setPrompt={setPrompt}
                 errorMessage={state.errorMessage}
@@ -295,6 +433,7 @@ export function AppShell() {
                   <ChatPanel
                     detail={activeDetail}
                     isThinking={isThinking}
+                    isBootstrapping={isBootstrapping}
                     prompt={prompt}
                     setPrompt={setPrompt}
                     errorMessage={state.errorMessage}
@@ -457,6 +596,7 @@ interface ChatPanelProps {
     messages: ConversationMessage[];
   };
   isThinking: boolean;
+  isBootstrapping: boolean;
   prompt: string;
   setPrompt: (value: string) => void;
   errorMessage?: string;
@@ -470,6 +610,7 @@ interface ChatPanelProps {
 function ChatPanel({
   detail,
   isThinking,
+  isBootstrapping,
   prompt,
   setPrompt,
   errorMessage,
@@ -490,7 +631,24 @@ function ChatPanel({
     <div className="relative flex h-full flex-col bg-white">
       <div className="flex-1 overflow-y-auto px-4 py-6 scroll-smooth">
         <div className="mx-auto max-w-3xl space-y-8">
-          {!detail || detail.messages.length === 0 ? (
+          {isBootstrapping ? (
+            <div className="flex min-h-[50vh] flex-col items-center justify-center px-4 text-center">
+              <motion.div
+                initial={{ scale: 0.95, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                transition={{ duration: 0.2 }}
+                className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-gray-200 bg-white shadow-sm"
+              >
+                <Bot size={26} className="text-blue-500" />
+              </motion.div>
+              <div className="text-lg font-semibold text-gray-800">
+                Restoring saved workspace...
+              </div>
+              <div className="mt-2 text-sm text-gray-500">
+                Reloading sessions, runs, and artifact history from storage.
+              </div>
+            </div>
+          ) : !detail || detail.messages.length === 0 ? (
             <div className="flex min-h-[50vh] flex-col items-center justify-center px-4 text-center">
               <motion.div
                 initial={{ scale: 0.9, opacity: 0 }}

@@ -1,15 +1,11 @@
 import cors from "cors";
 import express from "express";
 import { a2uiUserActionSchema } from "@my-manus/shared";
-import { readApiEnvironment } from "./config";
-import { RunCoordinator } from "./services/run-coordinator";
+import { createApiRuntime } from "./runtime";
 import { prepareSse, writeSseEvent } from "./services/sse";
-import { InMemoryAppStore } from "./store/in-memory-store";
 
 export function createApp() {
-  const env = readApiEnvironment();
-  const store = new InMemoryAppStore();
-  const coordinator = new RunCoordinator(store);
+  const { env, store, coordinator, eventBus, runQueue } = createApiRuntime();
   const app = express();
 
   app.use(cors());
@@ -18,7 +14,8 @@ export function createApp() {
   app.get("/health", (_request, response) => {
     response.json({
       ok: true,
-      agentMode: env.agentMode
+      agentMode: env.agentMode,
+      storageMode: env.storageMode
     });
   });
 
@@ -29,24 +26,24 @@ export function createApp() {
     });
   });
 
-  app.get("/sessions", (_request, response) => {
+  app.get("/sessions", async (_request, response) => {
     response.json({
       ok: true,
-      sessions: store.listSessions()
+      sessions: await store.listSessions()
     });
   });
 
-  app.post("/sessions", (request, response) => {
+  app.post("/sessions", async (request, response) => {
     const title = String(request.body?.title ?? "New session");
-    const session = store.createSession(title);
+    const session = await store.createSession(title);
     response.status(201).json({
       ok: true,
       session
     });
   });
 
-  app.get("/sessions/:sessionId", (request, response) => {
-    const detail = store.getSessionDetail(request.params.sessionId);
+  app.get("/sessions/:sessionId", async (request, response) => {
+    const detail = await store.getSessionDetail(request.params.sessionId);
     if (!detail) {
       response.status(404).json({
         ok: false,
@@ -61,22 +58,22 @@ export function createApp() {
     });
   });
 
-  app.get("/runs/:runId/events", (request, response) => {
+  app.get("/runs/:runId/events", async (request, response) => {
     response.json({
       ok: true,
-      events: store.getRunEvents(request.params.runId)
+      events: await store.getRunEvents(request.params.runId)
     });
   });
 
-  app.get("/runs/:runId/artifacts", (request, response) => {
+  app.get("/runs/:runId/artifacts", async (request, response) => {
     response.json({
       ok: true,
-      artifacts: store.listArtifacts(request.params.runId)
+      artifacts: await store.listArtifacts(request.params.runId)
     });
   });
 
-  app.get("/runs/:runId/stream", (request, response) => {
-    const run = store.getRun(request.params.runId);
+  app.get("/runs/:runId/stream", async (request, response) => {
+    const run = await store.getRun(request.params.runId);
     if (!run) {
       response.status(404).json({
         ok: false,
@@ -88,17 +85,17 @@ export function createApp() {
     prepareSse(response);
 
     if (request.query.replay !== "0") {
-      for (const event of store.getRunEvents(run.id)) {
+      for (const event of await store.getRunEvents(run.id)) {
         writeSseEvent(response, event);
       }
     }
 
-    const unsubscribe = store.subscribeToRun(run.id, (event) => {
+    const unsubscribe = await eventBus.subscribeToRun(run.id, (event) => {
       writeSseEvent(response, event);
     });
 
     request.on("close", () => {
-      unsubscribe();
+      void unsubscribe();
       response.end();
     });
   });
@@ -115,11 +112,19 @@ export function createApp() {
 
     const sessionId = String(request.body?.sessionId ?? "");
     const session =
-      store.getSession(sessionId) ??
-      store.createSession("New session");
+      (await store.getSession(sessionId)) ??
+      (await store.createSession("New session"));
 
-    const created = store.createRun(session.id, prompt);
-    void coordinator.startRun(created.run);
+    const created = await store.createRun(session.id, prompt);
+
+    if (env.storageMode === "postgres") {
+      await runQueue?.add("start_run", {
+        type: "start_run",
+        runId: created.run.id
+      });
+    } else {
+      void coordinator.startRun(created.run);
+    }
 
     response.status(201).json({
       ok: true,
@@ -155,10 +160,18 @@ export function createApp() {
         }
 
         const session =
-          store.getSession(action.sessionId) ??
-          store.createSession("New session");
-        const created = store.createRun(session.id, prompt);
-        void coordinator.startRun(created.run);
+          (await store.getSession(action.sessionId)) ??
+          (await store.createSession("New session"));
+        const created = await store.createRun(session.id, prompt);
+
+        if (env.storageMode === "postgres") {
+          await runQueue?.add("start_run", {
+            type: "start_run",
+            runId: created.run.id
+          });
+        } else {
+          void coordinator.startRun(created.run);
+        }
 
         response.status(201).json({
           ok: true,
@@ -200,16 +213,28 @@ export function createApp() {
         const clarification = String(
           action.a2uiClientDataModel?.clarification ?? ""
         ).trim();
-        await coordinator.continueRunAfterClarification(
-          action.runId,
-          clarification
-        );
+
+        if (env.storageMode === "postgres") {
+          await coordinator.prepareRunAfterClarification(
+            action.runId,
+            clarification
+          );
+          await runQueue?.add("resume_run", {
+            type: "resume_run",
+            runId: action.runId
+          });
+        } else {
+          await coordinator.continueRunAfterClarification(
+            action.runId,
+            clarification
+          );
+        }
         response.json({ ok: true });
         return;
       }
 
       if (action.action.name === "continue-research" && action.runId) {
-        const parentRun = store.getRun(action.runId);
+        const parentRun = await store.getRun(action.runId);
         if (!parentRun) {
           response.status(404).json({
             ok: false,
@@ -218,14 +243,22 @@ export function createApp() {
           return;
         }
 
-        const created = store.createRun(
+        const created = await store.createRun(
           parentRun.sessionId,
           `${parentRun.prompt}\n\nContinue the research and add one more practical angle.`
         );
-        void coordinator.startRun(created.run);
+
+        if (env.storageMode === "postgres") {
+          await runQueue?.add("start_run", {
+            type: "start_run",
+            runId: created.run.id
+          });
+        } else {
+          void coordinator.startRun(created.run);
+        }
         response.status(201).json({
           ok: true,
-          session: store.getSession(parentRun.sessionId),
+          session: await store.getSession(parentRun.sessionId),
           run: created.run,
           messages: [created.userMessage, created.assistantMessage]
         });

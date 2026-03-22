@@ -5,6 +5,10 @@
   "packageManager": "pnpm@10.24.0",
   "scripts": {
     "dev": "concurrently -n web,api,agent -c cyan,green,magenta \"pnpm --filter @my-manus/web dev\" \"pnpm --filter @my-manus/api dev\" \"pnpm --filter @my-manus/agent dev\"",
+    "infra:up": "docker compose up -d postgres redis",
+    "infra:down": "docker compose down",
+    "db:generate": "pnpm --filter @my-manus/db db:generate",
+    "db:migrate": "pnpm --filter @my-manus/db db:migrate",
     "build": "pnpm --filter @my-manus/web build && pnpm --filter @my-manus/api check && pnpm --filter @my-manus/agent check && pnpm --filter @my-manus/shared check && pnpm --filter @my-manus/db check",
     "check": "pnpm -r check",
     "test": "vitest run"

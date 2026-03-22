@@ -290,6 +290,126 @@
 - 点击步骤切换 artifact 时，当前流程树不会被意外收起。
 - 右侧 artifact 阅读体验明显更接近真实产品，而不是只够开发联调的工程态。
 
+## 迭代 13：PostgreSQL + Redis 主链路接入
+
+### 目标
+
+把当前“页面能跑，但一刷新和一重启就丢历史”的状态，升级成真正可持久化、可排队执行的后端主链路。
+
+### 为什么要接 PostgreSQL
+
+- `PostgreSQL` 负责“存真相”。
+- 它保存：
+  - `sessions`
+  - `messages`
+  - `runs`
+  - `run_steps`
+  - `artifacts`
+  - `approval_requests`
+  - `run_events`
+  - `pending_clarifications`
+- 这样页面刷新、API 重启、重新部署后，历史会话和 artifact 都不会丢。
+
+### 为什么要接 Redis
+
+- `Redis` 负责“做实时和调度”。
+- 一方面它承载 `run` 队列，让 API 不再自己跑长任务。
+- 另一方面它负责实时事件分发，让 worker 推出来的 `AG-UI` 事件可以被 SSE 立刻转发到前端。
+
+### 关键决策
+
+- 保留 `memory` 和 `postgres` 双模式切换。
+- `memory` 模式继续适合本地轻量开发。
+- `postgres` 模式下强制要求：
+  - `DATABASE_URL`
+  - `REDIS_URL`
+- `apps/agent` 默认转成纯 worker。
+- `packages/db` 不再只是 schema，占用了真正的基础设施职责：
+  - `PostgresAppStore`
+  - `RedisRunEventBus`
+  - BullMQ queue / worker helper
+  - drizzle migration
+
+### 结果
+
+- API 在 `postgres` 模式下只负责写库、入队、返回状态。
+- worker 负责真正执行 run。
+- `run_events` 已经可以落 PostgreSQL，并通过 Redis 实时分发。
+- 本地已经补上：
+  - `docker-compose.yml`
+  - `pnpm infra:up`
+  - `pnpm infra:down`
+  - `pnpm db:generate`
+  - `pnpm db:migrate`
+- `drizzle` 初始 migration 已生成。
+
+## 迭代 14：本地基础设施联调与端口隔离
+
+### 目标
+
+把数据库和缓存真正跑起来，并解决“本机已有 PostgreSQL / Redis 导致串库、串缓存”的环境问题。
+
+### 关键问题
+
+1. 机器本地已经有 PostgreSQL 占用 `5432`。
+2. 机器本地已经有 Redis 占用 `6379`。
+3. `drizzle-kit` 默认不会自动读取根目录 `.env`，导致迁移脚本拿不到 `DATABASE_URL`。
+
+### 修复结果
+
+- Docker Compose 端口改成：
+  - PostgreSQL：`55432`
+  - Redis：`56379`
+- `.env` 和 `.env.example` 已同步切到新的本地端口。
+- `packages/db/drizzle.config.ts` 增加了根目录 `.env` 兜底读取逻辑。
+- 本地已经实际完成：
+  - `pnpm infra:up`
+  - `pnpm db:migrate`
+  - `pnpm dev`
+
+### 当前结果
+
+- PostgreSQL 和 Redis 已经能和当前项目稳定隔离运行。
+- `postgres` 模式不再误连到你电脑里其他项目的本地数据库。
+- 数据表已经真正建到 PostgreSQL 中，不再只是“代码里声明了 schema”。
+
+## 迭代 15：数据库接入后的前端验收与刷新恢复修复
+
+### 目标
+
+确认数据库接入后，前端不是“只能看到一次结果”，而是真的能在刷新和切换 session 后恢复上下文。
+
+### 验收结论
+
+- 新建 session 成功。
+- 新建 run 成功，并且能通过队列交给 worker 执行。
+- `run_steps / artifacts / run_events` 都能落 PostgreSQL。
+- 刷新页面后，session 列表和历史 run 能重新加载回来。
+- 点击步骤切换 `browser / table / markdown / code` artifact 正常。
+
+### 暴露出来的问题
+
+用户如果手动切到旧 artifact，例如 `browser`，刷新后右侧 workspace 会重新回到 `latestArtifactId`，不会保留用户刚刚选中的 artifact。
+
+### 修复结果
+
+- 前端增加了本地 UI 状态持久化，保存：
+  - `activeSessionId`
+  - `activeRunIdBySession`
+  - `selectedArtifactIdByRun`
+  - `isArtifactPinnedByRun`
+- 首屏恢复阶段增加了 “Restoring saved workspace...” 状态，避免先闪空态再回填。
+- 刷新后如果用户之前手动切到了旧 artifact，workspace 现在会继续停留在该 artifact 上。
+
+### 当前体验
+
+- “数据库里有历史” 和 “前端真的恢复到了用户刚才看的位置” 这两件事现在已经对齐。
+- 同一浏览器里，刷新页面后能恢复：
+  - 当前 session
+  - 当前 run
+  - 当前选中的 artifact
+- 这让 workspace 从“有历史数据”真正变成了“可持续继续工作”的状态。
+
 ## 当前状态总结
 
 到目前为止，这个仓库已经完成了这些关键目标：
@@ -300,23 +420,24 @@
 - 运行层：mock / live 已打通
 - 交互层：clarification / approval / artifact actions 已可用
 - 规划层：deepagents planning 已接入主链路
+- 基础设施层：PostgreSQL + Redis 已接入主链路
+- 恢复层：刷新后可以恢复 session / run / artifact workspace
 
 但它还不是生产版，当前最明显的缺口仍然是：
 
-- 数据库没接主链路
-- 队列没接主链路
-- worker 调度没拆开
+- BullMQ 重试、死信队列和运行监控还没补
+- run 取消、超时、恢复策略还不完整
 - 登录和权限没开始
+- 导出文件还停留在审批和交互层，没有真正生成交付文件
 
 ## 下一阶段建议
 
 最推荐的迭代顺序是：
 
-1. 接 PostgreSQL
-2. 接 `run_events` 落库
-3. 接 Redis / BullMQ / worker
-4. 让 remote agent transport 成为正式路径
-5. 再做导出文件、登录、部署收口
+1. 补 BullMQ 重试、死信队列和运行监控
+2. 增加 run 取消、超时和恢复策略
+3. 让 remote agent transport 成为正式路径
+4. 再做导出文件、登录、部署收口
 
 ## 关联文档
 

@@ -7,13 +7,19 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "check": "tsc --noEmit -p tsconfig.json"
+    "check": "tsc --noEmit -p tsconfig.json",
+    "db:generate": "drizzle-kit generate --config ./drizzle.config.ts",
+    "db:migrate": "drizzle-kit migrate --config ./drizzle.config.ts"
   },
   "dependencies": {
+    "@my-manus/shared": "workspace:*",
+    "bullmq": "^5.58.5",
     "drizzle-orm": "^0.44.7",
+    "ioredis": "^5.8.2",
     "pg": "^8.16.3"
   },
   "devDependencies": {
-    "@types/pg": "^8.15.6"
+    "@types/pg": "^8.15.6",
+    "drizzle-kit": "^0.31.4"
   }
 }

@@ -37,15 +37,18 @@
 - 支持 deepagents planning 驱动的动态步骤树。
 - 支持按步骤回看独立 artifact，而不是只看最后一个结果。
 - 支持 clarification、approval、artifact actions 这些基础 HITL 交互。
+- 支持 `PostgreSQL + Redis + BullMQ` 的持久化和 worker 主链路。
+- 支持刷新后恢复 session、run 和当前正在查看的 artifact workspace。
 
 ### 2.2 当前还没有完成的能力
 
-- 真实 PostgreSQL 持久化还没有接到主链路，当前主链路仍是内存 store。
-- Redis / 队列 / worker 调度还没有接到主链路。
+- `PostgreSQL + Redis` 已经接入主链路，但当前还没有做生产级增强，例如重试退避、死信队列、分布式锁和运行监控。
+- 当前仍然保留 `memory` 模式，方便本地快速开发和无基础设施调试。
 - run 取消、超时恢复、重试策略还没有补完整。
 - 文件导出现在还是协议和审批流程为主，还没有真正生成下载文件。
 - 登录和多用户权限还没有开始做。
 - 浏览器级电脑代理、沙箱执行、代码运行审批还只是后续扩展位。
+- 当前“刷新后恢复 artifact 选择”是同一浏览器内的本地 UI 持久化，还没有上升到跨设备同步偏好。
 
 ## 3. 为什么选 AG-UI + A2UI
 
@@ -122,6 +125,7 @@
 - 负责静态 app shell。
 - 负责消费 `/runs/:runId/stream` 返回的 `AG-UI` SSE。
 - 负责把 `CUSTOM/a2ui.message` 交给 A2UI renderer。
+- 负责把当前 `session / run / artifact` 选择持久化到本地，刷新后恢复用户刚才的工作位置。
 
 关键文件：
 
@@ -135,12 +139,13 @@
 
 - Express API。
 - 负责 session、run、artifact、SSE、A2UI userAction。
-- 负责把 agent 语义转换成协议事件。
+- `memory` 模式下直接执行 run。
+- `postgres` 模式下负责写库、入队、读状态和 SSE。
 
 关键文件：
 
 - [app.ts](/Users/hundred/Documents/code/my-manus/apps/api/src/app.ts)
-- [run-coordinator.ts](/Users/hundred/Documents/code/my-manus/apps/api/src/services/run-coordinator.ts)
+- [runtime.ts](/Users/hundred/Documents/code/my-manus/apps/api/src/runtime.ts)
 - [sse.ts](/Users/hundred/Documents/code/my-manus/apps/api/src/services/sse.ts)
 - [in-memory-store.ts](/Users/hundred/Documents/code/my-manus/apps/api/src/store/in-memory-store.ts)
 
@@ -148,13 +153,16 @@
 
 - 当前提供 research 能力。
 - 支持 `mock` 和 `live`。
-- 当前 API 主链路默认是“直接在进程内调用 `@my-manus/agent`”，并没有强制走远程 agent HTTP。
+- 当前 `apps/agent` 已经转成主链路 worker。
+- 调试用 HTTP server 仍然保留，但不再是默认 dev 入口。
 
 关键文件：
 
 - [config.ts](/Users/hundred/Documents/code/my-manus/apps/agent/src/config.ts)
 - [mock.ts](/Users/hundred/Documents/code/my-manus/apps/agent/src/mock.ts)
 - [research.ts](/Users/hundred/Documents/code/my-manus/apps/agent/src/research.ts)
+- [run-coordinator.ts](/Users/hundred/Documents/code/my-manus/apps/agent/src/run-coordinator.ts)
+- [worker.ts](/Users/hundred/Documents/code/my-manus/apps/agent/src/worker.ts)
 - [server.ts](/Users/hundred/Documents/code/my-manus/apps/agent/src/server.ts)
 
 ### `packages/shared`
@@ -171,13 +179,21 @@
 
 ### `packages/db`
 
-- 已经定义好 Drizzle schema。
-- 当前还没有完全接到运行主链路。
+- 不再只是 schema 占位。
+- 现在同时承载：
+  - Drizzle PostgreSQL schema
+  - `PostgresAppStore`
+  - `RedisRunEventBus`
+  - BullMQ queue / worker helpers
+  - drizzle migrations
 
 关键文件：
 
 - [schema.ts](/Users/hundred/Documents/code/my-manus/packages/db/src/schema.ts)
 - [client.ts](/Users/hundred/Documents/code/my-manus/packages/db/src/client.ts)
+- [postgres-app-store.ts](/Users/hundred/Documents/code/my-manus/packages/db/src/postgres-app-store.ts)
+- [redis-run-event-bus.ts](/Users/hundred/Documents/code/my-manus/packages/db/src/redis-run-event-bus.ts)
+- [run-queue.ts](/Users/hundred/Documents/code/my-manus/packages/db/src/run-queue.ts)
 
 ## 5. Figma 对齐后的界面理解
 
@@ -252,24 +268,16 @@
 
 ### 7.1 当前运行时数据模型
 
-当前 API 主链路用的是 [in-memory-store.ts](/Users/hundred/Documents/code/my-manus/apps/api/src/store/in-memory-store.ts)。
+当前已经有两套 store 实现：
 
-内存 store 里维护了这些核心结构：
+- [in-memory-store.ts](/Users/hundred/Documents/code/my-manus/apps/api/src/store/in-memory-store.ts)
+  - 适合本地快速开发
+  - API 直接执行 run
+- [postgres-app-store.ts](/Users/hundred/Documents/code/my-manus/packages/db/src/postgres-app-store.ts)
+  - 适合作为正式主链路
+  - 所有核心实体都持久化到 PostgreSQL
 
-- `sessions`
-- `messages`
-- `runs`
-- `runSteps`
-- `artifacts`
-- `approvals`
-- `runEvents`
-- `pendingClarifications`
-
-这里最关键的是 `runEvents`：
-
-- 它保存每个 run 的完整 `AG-UI` 事件序列。
-- 刷新页面后，前端依赖它进行 replay。
-- 这也是当前版本唯一的“可重放历史”。
+两套 store 都遵守统一的 `AppStore` 合同，所以 `RunCoordinator` 不需要知道当前是内存还是数据库。
 
 ### 7.2 目标数据库模型
 
@@ -282,6 +290,7 @@
 - `artifacts`
 - `approval_requests`
 - `run_events`
+- `pending_clarifications`
 
 每张表的作用可以简单理解成：
 
@@ -359,20 +368,22 @@
 
 1. 前端调用 `POST /runs`
 2. API 创建 run 和首轮消息
-3. `RunCoordinator` 将 run 状态改为 `running`
-4. 发出 `RUN_STARTED`
-5. 初始化 3 类 surface
+3. `memory` 模式下，API 直接调用 `RunCoordinator`
+4. `postgres` 模式下，API 先写 PostgreSQL，再把 job 投递到 Redis/BullMQ
+5. worker 读取队列，`RunCoordinator` 将 run 状态改为 `running`
+6. 发出 `RUN_STARTED`
+7. 初始化 3 类 surface
    - assistant message
    - steps
    - artifact actions
-6. 发出 assistant 文本事件
-7. 如果命中 clarification 条件，切到 `waiting_clarification`
-8. 否则进入 `performResearch`
-9. `performResearch()` 先调用 `planResearchRun()` 拿到动态步骤树
-10. API 把步骤树 materialize 成 `RunStep[]`，同步到 `steps:{runId}` surface
-11. 协调器逐个执行叶子步骤，每完成一步就创建独立 `ArtifactRecord`
-12. 每个 artifact 通过 `artifact:{artifactId}` surface 渲染到右侧 workspace
-13. assistant 正文补充总结，run 进入完成态，或根据结果进入 approval / error
+8. 发出 assistant 文本事件
+9. 如果命中 clarification 条件，切到 `waiting_clarification`
+10. 否则进入 `performResearch`
+11. `performResearch()` 先调用 `planResearchRun()` 拿到动态步骤树
+12. 协调器逐个执行叶子步骤，每完成一步就创建独立 `ArtifactRecord`
+13. 每个 artifact 通过 `artifact:{artifactId}` surface 渲染到右侧 workspace
+14. 所有事件一边写入 `run_events`，一边通过 Redis pub/sub 分发给 SSE
+15. assistant 正文补充总结，run 进入完成态，或根据结果进入 approval / error
 
 ### 9.1 当前步骤设计
 
@@ -397,8 +408,9 @@
 2. 生成 clarification surface
 3. run 状态切到 `waiting_clarification`
 4. 前端提交 `submit-clarification`
-5. API 把补充信息拼回 prompt
-6. run 回到 `running`
+5. API 先更新数据库里的 pending clarification / run prompt / run 状态
+6. 然后把 `resume_run` job 重新投递到 Redis 队列
+7. worker 再继续真正的 research 执行
 
 ### 9.3 Approval
 
@@ -466,8 +478,8 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:4300
 API_PORT=4300
 AGENT_PORT=4301
 APP_STORAGE_MODE=memory
-REDIS_URL=
-DATABASE_URL=
+REDIS_URL=redis://localhost:56379
+DATABASE_URL=postgresql://postgres:postgres@localhost:55432/my_manus
 OPENAI_API_BASE=
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-5-mini
@@ -480,10 +492,10 @@ AGENT_EXECUTION_MODE=mock
 
 - `NEXT_PUBLIC_API_BASE_URL`：前端连接哪个 API。
 - `API_PORT`：Express 端口。
-- `AGENT_PORT`：agent HTTP 端口。
-- `APP_STORAGE_MODE`：当前保留位，后面可切 storage backend。
-- `REDIS_URL`：后续接队列和缓存时使用。
-- `DATABASE_URL`：后续接 PostgreSQL 时使用。
+- `AGENT_PORT`：调试用 agent HTTP 端口；worker 主链路不依赖它。
+- `APP_STORAGE_MODE`：`memory` 或 `postgres`。
+- `REDIS_URL`：BullMQ 队列和实时事件分发使用。
+- `DATABASE_URL`：PostgreSQL 持久化使用。
 - `OPENAI_API_BASE`：企业代理或自定义 OpenAI base URL。
 - `OPENAI_API_KEY`：模型访问密钥。
 - `TAVILY_API_KEY`：搜索密钥。
@@ -497,7 +509,7 @@ AGENT_EXECUTION_MODE=mock
 
 - `web` 用 Render Web Service
 - `api` 用 Render Web Service
-- `agent` 用 Render Worker 或 Web Service
+- `agent` 用 Render Worker
 - PostgreSQL 用 Render Postgres
 - Redis 用 Render Key Value
 
@@ -547,8 +559,8 @@ AGENT_EXECUTION_MODE=mock
 
 当前你最需要知道的技术债有 6 个：
 
-1. `InMemoryAppStore` 只适合本地开发，不适合重启后恢复真实数据。
-2. `api` 还没有把 run 调度拆到真正独立 worker。
+1. 当前虽然已经有 PostgreSQL / Redis 主链路，但还没有补重试退避、死信队列和失败重放。
+2. 当前 worker 已经拆出，但还没有做更细粒度的运行监控和运维面板。
 3. remote agent transport 只是配置预留，还不是主路径。
 4. 前端虽然已经接入 A2UI，但 renderer 还是 v1 轻量实现，组件能力有限。
 5. artifact 目前以 research 类型为主，还没有真正扩展到代码执行、文件处理、浏览器自动化。
@@ -558,10 +570,9 @@ AGENT_EXECUTION_MODE=mock
 
 如果按“最稳、最不容易返工”的顺序推进，我建议是：
 
-1. 先把 PostgreSQL 持久化接上。
-2. 把 `run_events` 真正落库。
-3. 再把 Redis / BullMQ / worker 调度接上。
-4. 然后把 remote agent transport 真正启用。
+1. 先补 PostgreSQL / Redis 的本地和部署联调验证。
+2. 再补 BullMQ 的重试、死信队列和运行监控。
+3. 然后把 remote agent transport 真正启用。
 5. 再补导出文件落地、run cancel / retry。
 6. 最后再上登录、权限、公开部署。
 
